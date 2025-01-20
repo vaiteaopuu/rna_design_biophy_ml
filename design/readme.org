@@ -1,0 +1,3 @@
+This directory contains the artificial experiments with two configurations (A
+and B) that are respectively denoted 2 and 3 in the folders. The structures are
+in the files input/dca_2.str and input/dca_3.str.

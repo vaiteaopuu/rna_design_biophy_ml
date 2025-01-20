@@ -1,0 +1,51 @@
+* Overview
+This repository is an implementation of a hybrid biophysical-machine learning
+generative model for RNA design. It combines Direct Coupling Analysis (DCA) with
+the thermodynamic model of RNA secondary structure folding. To train the DCA, we
+use the Boltzmann learning algorithm (BL-DCA).
+
+* Requirements and installation
+The code is implemented in C, which we tested with:
+- gcc version 11.4.0
+- ViennaRNA library version 2.6.4 (https://viennarna.readthedocs.io/en/latest/index.html)
+
+To compile the code, run the following command in the dca_struct/ director:
+#+begin_src bash
+make mcmc
+#+end_src
+
+* Usage
+
+The input of the model for training is an MSA and a secondary structure in
+dot-bracket notation. The sampling uses the MSA (to seed the MCMC), the
+secondary structure, and the trained DCA parameters. That is where one can
+introduce structural perturbations.
+
+#+begin_src bash
+#!/usr/bin/env bash
+
+aln="test/RF00005_1.seq"
+
+struct_mode=3                   # use 0 for regular DCA
+struct="test/RF00005_1.str"
+
+# Train the model
+time dca_struct/bin/dca  -n 3000 -u 1000 -t 1 -l 0.05 -h 0.1 -m 0 -s ${struct_mode}\
+     $aln $struct > test/model.dca 2> test/log
+# Sample from the model
+time dca_struct/bin/dca  -n 1 -u 1000000 -t 1 -m 1 -s ${struct_mode} -f 1E-3 \
+         $aln $struct -b test/model.dca > test/gen.seq
+#+end_src
+
+* Content
+The data used for benchmarked are obtained from
+https://github.com/KIT-MBS/coconet (RNA_DATASET/). The notebook
+~reproducibility.org~ contains the code snippets used in the paper to produce
+the figures.
+
+- benchmark/: it contains the contact prediction benchmark.
+- design/: it contains the artificial experiments on binding and stability.
+- clustering/: it contains the benchmark on structural imprinting.
+
+For details, refer to:
+

@@ -1,0 +1,636 @@
+* Benchmark
+** bl-dca contact pdb
+
+#+begin_src python
+from src.struct import pdb_contacts
+from src.dca_tools import get_dca_scores, apply_apc, k_dca_scores, read_alpha
+from src.struct import paired_positions, get_matrix_from_db
+from src.data import map_rfam_pdb
+from src.benchmark import read_bl_cocnet, read_plm_cocnet, read_coconet, read_stat, one_test, read_data
+from scipy.stats import pearsonr, spearmanr
+from scipy.stats import wilcoxon, ttest_ind
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+# READ THE DATA
+struct_mode = 3
+all_data = {rfam: {"mfe": [], "norm": [], "ali": [], "exp": [], "ali_alpha": [],
+                   "mfe_alpha": [], "exp_alpha": [], "struct_only": [], "bl": [],
+                   "plm": [], "coconet": []} for rfam in map_rfam_pdb}
+for rfam, pdb in map_rfam_pdb.items():
+    print(f"{rfam}")
+    prev_bl_mat = read_bl_cocnet(rfam)
+    prev_plm_mat = read_plm_cocnet(rfam)
+    prev_coconet_mat = read_coconet(rfam)
+    all_data[rfam]["bl"] = prev_bl_mat
+    all_data[rfam]["plm"] = prev_plm_mat
+    all_data[rfam]["coconet"] = prev_plm_mat
+    all_data[rfam]["true_sec_str"] = open(f"benchmark/dca_input/{rfam}.str").readlines()[0].strip().replace("[", ".").replace("]", ".")
+    all_data[rfam]["len_seq"] = len(all_data[rfam]["true_sec_str"])
+    all_data[rfam]["true_pairs"] = paired_positions(all_data[rfam]["true_sec_str"])
+    all_data[rfam]["exp_only"] = get_matrix_from_db(all_data[rfam]["true_sec_str"])
+    all_data[rfam]["3D_pairs"] = pdb_contacts(f"data/coconet/RNA_DATASET/PDBFiles/{pdb}.pdb", threshold=10)
+    all_data[rfam]["mfe_only"] = get_matrix_from_db(open(f"./benchmark/dca_input/vrna_{rfam}.str").readlines()[0].strip())
+    all_data[rfam]["ali_only"] = get_matrix_from_db(open(f"./benchmark/dca_input/{rfam}_ali.str").readlines()[0].strip())
+    for rep in range(10):
+        dca_norm, alpha_norm = read_data(f"./benchmark/out/{rfam}_0_{rep}.dca")
+        dca_exp, alpha_exp = read_data(f"./benchmark/out/{rfam}_3_{rep}.dca")
+        dca_ali, alpha_ali = read_data(f"./benchmark/out_ali/{rfam}_3_{rep}.dca")
+        dca_mfe, alpha_mfe = read_data(f"./benchmark/out_vrna/{rfam}_3_{rep}.dca")
+        all_data[rfam]["norm"] += [dca_norm]
+        all_data[rfam]["ali"] += [dca_ali]; all_data[rfam]["ali_alpha"] += [alpha_ali]
+        all_data[rfam]["exp"] += [dca_exp]; all_data[rfam]["exp_alpha"] += [alpha_exp]
+        all_data[rfam]["mfe"] += [dca_mfe]; all_data[rfam]["mfe_alpha"] += [alpha_mfe]
+
+# BENCHMARK
+frac_list = np.linspace(0.1, 1, 10)
+rfam_list = list(map_rfam_pdb.keys())
+res_data = {frac: {fam: {"mfe": [], "norm": [], "ali": [], "exp": [], "ali_alpha": [],
+                                 "mfe_alpha": [], "exp_alpha": [], "struct_only": [], "bl": [],
+                                 "plm": [], "coconet": []} for fam in rfam_list} for frac in frac_list}
+for pred_frac in frac_list:
+    for rfam, pdb in map_rfam_pdb.items():
+        len_seq = all_data[rfam]["len_seq"]
+        to_pred = set(all_data[rfam]["true_pairs"])
+        nb_pred = int(len_seq * pred_frac)
+        for des_type in ["norm", "ali", "mfe", "exp"]:
+            for rep in range(10):
+                if des_type+"_only" in all_data[rfam]:
+                    struct_mat = all_data[rfam][des_type+"_only"]
+                else:
+                    struct_mat = None
+                dca_mat = one_test(all_data[rfam][des_type][rep], struct_mat)
+                norm_pred = set(k_dca_scores(dca_mat, nb_pred))
+                res_data[pred_frac][rfam][des_type] += [len(norm_pred & to_pred)/nb_pred]
+        for des_type in ["plm", "bl", "coconet"]:
+            mm_mat = one_test(all_data[rfam][des_type], None)
+            plm_pred = set(k_dca_scores(mm_mat, nb_pred))
+            res_data[pred_frac][rfam][des_type] += [len(plm_pred & to_pred)/nb_pred]
+plt.rcParams["font.size"] = 9
+fig, ax = plt.subplots(figsize=(2.3, 2.3))
+names = {"exp": "EXP", "norm": "DCA", "mfe": "MFE", "ali": "ALI", "plm": "PLM", "coconet": "Coconet"}
+res_base = [np.mean([np.mean(res_data[frac][fam]["norm"]) for fam in rfam_list]) for frac in frac_list]
+for des_id, des_type in enumerate(["norm", "ali", "mfe", "exp", "coconet"]):
+    res_val = [np.mean([np.mean(res_data[frac][fam][des_type]) for fam in rfam_list]) for frac in frac_list]
+    if des_type != "norm":
+        pval_list = [wilcoxon([np.mean(res_data[frac][fam][des_type]) for fam in rfam_list],
+                              [np.mean(res_data[frac][fam]["norm"]) for fam in rfam_list],
+                              alternative="greater").pvalue
+                     for frac in frac_list]
+    ax.plot(frac_list, res_val, label=names[des_type], c=f"C{des_id}")
+    if des_type != "norm":
+        for frac, pval, val in zip(frac_list, pval_list, res_val):
+            if pval < 0.05:
+                ax.scatter([frac], [val], marker="x", c=f"C{des_id}")
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.set_xlabel("%L")
+ax.set_ylabel("<PPV> 2D")
+ax.legend(frameon=False)
+plt.tight_layout()
+# plt.savefig("img/ppv_2D.png", dpi=300)
+plt.show()
+
+rfam_list = list(map_rfam_pdb.keys())
+fig, ax = plt.subplots(figsize=(2.3, 2.3))
+ax.hist(
+    [[np.mean(el["exp_alpha"]) for fam, el in all_data.items()],
+     [np.mean(el["ali_alpha"]) for fam, el in all_data.items()],
+     [np.mean(el["mfe_alpha"]) for fam, el in all_data.items()]],
+    histtype="step", bins=40, density=True, label=["EXP", "ALI", "MFE"], color=["C3", "C1", "C2"]
+    )
+print(ttest_ind([np.mean(el["ali_alpha"]) for fam, el in all_data.items()],
+                [np.mean(el["mfe_alpha"]) for fam, el in all_data.items()], alternative="greater"))
+print(ttest_ind([np.mean(el["ali_alpha"]) for fam, el in all_data.items()],
+                [np.mean(el["exp_alpha"]) for fam, el in all_data.items()], alternative="greater"))
+ax.legend(frameon=False, loc="upper left")
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.set_xlabel("$\\phi$", fontsize=12)
+ax.set_ylabel("Frequency")
+plt.tight_layout()
+# plt.savefig("img/hist_alpha.png", dpi=300)
+plt.show()
+#+end_src
+
+** mf-dca
+
+#+begin_src python
+from src.struct import pdb_contacts
+from src.dca_tools import get_dca_scores, apply_apc, k_dca_scores, read_alpha
+from src.struct import paired_positions
+from src.data import map_rfam_pdb
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.stats import pearsonr
+from scipy.stats import wilcoxon
+
+def read_mfdca(infile, len_seq):
+    results = np.zeros((len_seq, len_seq))
+    for l in open(infile):
+        if not l.startswith("#"):
+            pi, pj, score = l.strip().split()
+            pi, pj = int(pi), int(pj)
+            results[pi, pj] = float(score)
+            results[pj, pi] = float(score)
+    return results
+
+def read_stat(infile):
+    results = []
+    for l in open(infile):
+        if not l.startswith("#"):
+            pi, pj, ai, aj, prob, ccov = l.strip().split()
+            if pi != pj:
+                results += [float(prob)]
+    return results
+
+tmp = []
+struct_mode = 3
+for rfam, pdb in map_rfam_pdb.items():
+    contacts = pdb_contacts(f"data/coconet/RNA_DATASET/PDBFiles/{pdb}.pdb")
+    struct = open(f"benchmark/dca_input/{rfam}.str").readlines()[0].strip()
+    dca_norm = apply_apc(read_mfdca(f"benchmark/out/mf_dca_{rfam}_0.dca", len(struct)))
+    dca_stru = apply_apc(read_mfdca(f"benchmark/out/mf_dca_{rfam}_{struct_mode}.dca", len(struct)))
+
+    nb_seq = len(open(f"./benchmark/dca_input/{rfam}.seq").readlines())
+
+    sec_pairs = paired_positions(struct)
+    sec_pairs = [(pi, pj) for pi, pj in sec_pairs if struct[pi] in ["(", ")"]
+                 and struct[pj] in ["(", ")"]]
+
+    len_to_pred = len(to_pred)//2
+    to_pred = set(contacts)
+    dca_norm = k_dca_scores(dca_norm, len_to_pred)
+    dca_stru = k_dca_scores(dca_stru, len_to_pred)
+
+    norm_only = len(set(dca_norm) & to_pred)/len_to_pred
+    stru_only = len(set(dca_stru) & to_pred)/len_to_pred
+    print("{:10} {:10.3f} {:10.3f} {:10}".format(rfam, norm_only, stru_only, nb_seq))
+    tmp += [(rfam, norm_only, stru_only, nb_seq)]
+
+rfam, norm_res, struct_res, nb_seq_l = zip(*tmp)
+
+pval = wilcoxon(struct_res, norm_res, alternative="two-sided").pvalue
+fig, ax = plt.subplots(figsize=(2.3, 2.3))
+ax.scatter(struct_res, norm_res, color='blue')
+ax.plot([0, max(struct_res+norm_res)], [0, max(struct_res+norm_res)], 'r--')
+ax.set_xlabel("<PPV> all mfDCA+MFE")
+ax.set_ylabel("<PPV> all mfDCA")
+ax.text(0, 0.5, f"pvalue={pval:.3f}")
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+plt.tight_layout()
+plt.savefig("img/Fig_SI_mfdca.png", dpi=300)
+plt.show()
+#+end_src
+
+** Regularization
+
+#+begin_src python
+from src.struct import pdb_contacts
+from src.dca_tools import get_dca_scores, apply_apc, k_dca_scores, read_alpha
+from src.struct import paired_positions, get_matrix_from_db
+from src.data import map_rfam_pdb
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.stats import pearsonr, spearmanr
+from scipy.stats import wilcoxon
+from src.benchmark import read_bl_cocnet, read_plm_cocnet, read_stat, one_test, read_data
+
+# READ THE DATA
+struct_mode = 3
+all_data = {}
+rfam = "RF00005_1"
+pdb = map_rfam_pdb[rfam]
+true_struct = open(f"benchmark/dca_input/{rfam}.str").readlines()[0].strip().replace("[", ".").replace("]", ".")
+vrna_struct = open(f"benchmark/dca_input/vrna_{rfam}.str").readlines()[0].strip()
+len_seq = len(true_struct)
+true_pairs = paired_positions(true_struct)
+true_mat = get_matrix_from_db(true_struct)
+vrna_mat = get_matrix_from_db(vrna_struct)
+all_contacts = pdb_contacts(f"data/coconet/RNA_DATASET/PDBFiles/{pdb}.pdb", threshold=10)
+reg_list = [0,0.001,0.01,0.05,0.1]
+for reg in reg_list:
+    dca_norm, alpha_norm = read_data(f"./test_si/reg/output/out_{reg}.dca")
+    all_data[reg] = dca_norm
+
+# BENCHMARK
+frac_list = np.linspace(0.1, 1, 10)
+res = {}
+to_pred = set(true_pairs)
+for reg in reg_list:
+    res[reg] = []
+    for pred_frac in frac_list:
+        nb_pred = int(len_seq * pred_frac)
+        dca_mat = one_test(all_data[reg], vrna_mat)
+        norm_pred = set(k_dca_scores(dca_mat, nb_pred))
+        res[reg] += [len(norm_pred & to_pred)/nb_pred]
+
+fig, ax = plt.subplots(figsize=(2.3, 2.3))
+for reg in reg_list:
+    ax.plot(frac_list, res[reg], label=reg)
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.legend(frameon=False)
+ax.set_xlabel("%L")
+ax.set_ylabel("<PPV> 2D")
+plt.tight_layout()
+plt.savefig("img/FIG_SI_ppv_2D_reg.png", dpi=300)
+plt.show()
+#+end_src
+
+* Design from artificial sequences: ligand
+The systems we refer here as S2 is the configuration A whereas the system S3 is
+the configuration B.
+#+begin_example
+>S2
+CUAUGCUCGUCUUAGUUGCUAAUCGGAGC&AUGG
+((((((((...((((...))))...))))&))))
+>S3
+CCAUGGCCUAAGGCUUUAUCCCCCCGGGA&AUGG
+((((((((...))))...((((...))))&))))
+#+end_example
+
+*** Produce the artificial data
+
+Generate the training data: perform random mutations, then selection.
+
+#+begin_src python
+from src.struct import get_matrix_from_db, compute_corr
+from random import sample, choice
+from numpy import mean
+import matplotlib.pyplot as plt
+
+sys_name = "S3"
+wt = "CCAUGGCCUAAGGCUUUAUCCCCCCGGGA&AUGG"
+wt_struct = "((((((((...))))...((((...))))))))"
+
+substrat = wt[wt.index("&")+1:]
+wt_arr = get_matrix_from_db(wt_struct)
+mutable = wt[:wt.index("&")]
+seq_len = len(mutable)
+
+THRES = 0.6
+
+res = []
+with open(f"design/input/pos_{sys_name}.seq", "w") as pos, open(f"design/input/neg{sys_name}.seq", "w") as neg:
+    for nb_mut in range(1, 11):
+        tmp_res = []
+        seen = set()
+        for i in range(10000):
+            tmp = [n for n in mutable]
+            pl = sample(range(seq_len), k=nb_mut)
+            for p in pl:
+                to_n = choice(list(set(list("AUGC"))- set([tmp[p]])))
+                tmp[p] = to_n
+            seq_ = "".join(tmp)
+            if seq_ not in seen:
+                score, _ = compute_corr("".join(tmp)+"&"+substrat, wt_arr)
+                if score < THRES:
+                    pos.write(f"{seq_}\n")
+                else:
+                    neg.write(f"{seq_}\n")
+                tmp_res += [score]
+                seen.add(seq_)
+        res += [tmp_res]
+#+end_src
+
+*** Compare the methods
+
+#+begin_src python
+from src.struct import get_matrix_from_db, compute_corr_mod
+from random import sample, choice
+from numpy import mean, array
+import matplotlib.pyplot as plt
+
+wt = "CUAUGCUCGUCUUAGUUGCUAAUCGGAGC&AUGG"
+
+substrat = wt[wt.index("&")+1:]
+# wt_struct = "((((....)))).((((((((....))))))))"
+wt_struct = "((((.........................))))"
+wt_arr = get_matrix_from_db(wt_struct)
+mutable = wt[:wt.index("&")]
+seq_len = len(mutable)
+
+THRES = 3
+
+hamming = lambda x, y: sum(x_ != y_ for x_, y_ in zip(x, y))
+def get_data(infile):
+    temp_d = {d:[] for d in range(0, 30)}
+    dist_d = {d:[] for d in range(0, 30)}
+    dist_d_s = {d:[] for d in range(0, 30)}
+    for wei in range(-1, 5):
+        list_seq = [s.strip() for s in open(infile.format(wei))]
+        for seq in list_seq:
+            if seq not in temp_d[hamming(seq, wt)] and len(seq) > 20: # nohup issue
+                temp_d[hamming(seq, wt)] += [seq]
+
+    for dist, seq_l in temp_d.items():
+        for seq in sample(seq_l, min(100, len(seq_l))):
+            score, _ = compute_corr_mod(seq+"&"+substrat, wt_arr)
+            dist_d[dist] += [score]
+            if score > THRES:
+                dist_d_s[dist] += [seq]
+    return dist_d, dist_d_s
+
+dist_d0, dist_d0_s = [0 for i in range(10)] ,[0 for i in range(10)]
+dist_d3, dist_d3_s = [0 for i in range(10)] ,[0 for i in range(10)]
+dist_d0_t, dist_d0_t_s = [0 for i in range(10)], [0 for i in range(10)]
+dist_d3_p, dist_d3_p_s = [0 for i in range(10)], [0 for i in range(10)]
+dist_d3_p0, dist_d3_p0_s = [0 for i in range(10)], [0 for i in range(10)]
+dist_d23_p, dist_d23_p_s = [0 for i in range(10)], [0 for i in range(10)]
+
+for i in range(10):
+    dist_d0[i], dist_d0_s[i] = get_data("./design/results/out_cl_pos_S2_0.seq_w{}_p1_t1")
+    dist_d3[i], dist_d3_s[i] = get_data("./design/results/out_cl_pos_S2_3.seq_w{}_p1_t1")
+    dist_d3_p0[i], dist_d3_p0_s[i] = get_data("./design/results/out_cl_pos_S2_3.seq_w{}_p0_t1")
+    dist_d0_t[i], dist_d0_t_s[i] = get_data("./design/results/out_cl_pos_S2_0.seq_w{}_p1_t0.6")
+    dist_d3_p[i], dist_d3_p_s[i] = get_data("./design/results/out_cl_pos_S2_3.seq_w{}_p2_t1")
+    dist_d23_p[i], dist_d23_p_s[i] = get_data("./design/results/out_cl_pos_S2_3.seq_w{}_p2_t1_23")
+
+with open("scratch/test.seq", "w") as out:
+    for d, seq_l in dist_d23_p_s[1].items():
+        for s in seq_l:
+            out.write(f"{s}\n")
+
+with open("scratch/test_p2.seq", "w") as out:
+    for d, seq_l in dist_d3_p_s[1].items():
+        for s in seq_l:
+            out.write(f"{s}\n")
+
+def diam_seq(seq_l):
+    if len(seq_l) > 1:
+        return max([hamming(x, y) for i, y in enumerate(seq_l) for x in seq_l[i+1:]])
+    else:
+        return 0
+
+def plot_one(dist_dic, ax, lab, col, alpha=1):
+    if alpha == 1:
+        ax.scatter(range(1, 30), [sum(v > THRES for v in dist_dic[i])/len(dist_dic[i]) if len(dist_dic[i]) > 0 else 0 for i in range(1, 30)], label=lab, c=col, s=5, alpha=alpha)
+    ax.plot(range(1, 30), [sum(v > THRES for v in dist_dic[i])/len(dist_dic[i]) if len(dist_dic[i]) > 0 else 0 for i in range(1, 30)], c=col, alpha=alpha)
+
+plt.rcParams["font.size"] = 11
+fig, (ax, bx) = plt.subplots(2, figsize=(3.5, 4))
+for ci, (data, name) in enumerate(zip([dist_d0, dist_d3, dist_d0_t, dist_d3_p, dist_d3_p0, dist_d23_p], ["REG", "HYB", "REG(T=0.6)", "HYB+B", "STRUCT", "HYB(A $\\rightarrow$ B)"])):
+    ax.plot(range(1, 30), [mean([sum(array(data[pi][d]) > THRES)/len(array(data[pi][d])) if len(array(data[pi][d])) > 0 else 0 for pi in range(10)]) for d in range(1, 30)], label=name, c=f"C{ci}")
+for pi in range(10):
+    plot_one(dist_d0[pi], ax, "", "C0", 0.2)
+    plot_one(dist_d3[pi], ax, "", "C1", 0.2)
+    plot_one(dist_d0_t[pi], ax, "", "C2", 0.2)
+    plot_one(dist_d3_p[pi], ax, "", "C3", 0.2)
+    plot_one(dist_d3_p0[pi], ax, "", "C4", 0.2)
+    plot_one(dist_d23_p[pi], ax, "", "C5", 0.2)
+    bx.plot(range(1, 30), [diam_seq(dist_d0_s[pi][i]) for i in range(1, 30)], c="C0", alpha=0.2)
+    bx.plot(range(1, 30), [diam_seq(dist_d3_s[pi][i]) for i in range(1, 30)], c="C1", alpha=0.2)
+    bx.plot(range(1, 30), [diam_seq(dist_d0_t_s[pi][i]) for i in range(1, 30)], c="C2", alpha=0.2)
+    bx.plot(range(1, 30), [diam_seq(dist_d3_p_s[pi][i]) for i in range(1, 30)], c="C3", alpha=0.2)
+    bx.plot(range(1, 30), [diam_seq(dist_d3_p0_s[pi][i]) for i in range(1, 30)], c="C4", alpha=0.2)
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+bx.spines['top'].set_visible(False)
+bx.spines['right'].set_visible(False)
+# ax.set_xlabel("NB. mutation WT")
+bx.set_xlabel("NB. mutation WT")
+bx.set_ylabel("Design diameter")
+ax.set_ylabel("Active fraction")
+ax.legend(frameon=False, fontsize=9, bbox_to_anchor=(0.70, 0.1))
+plt.tight_layout()
+plt.savefig("./img/design_function.png", dpi=300)
+plt.show()
+#+end_src
+
+* Design unseen sequences
+*** Prepare the data
+
+#+begin_src python :results output
+from src.seq_io import read_fasta, encode_align, pair_freq
+from src.pca_analysis import compute_covariance_mat, compute_pca
+from src.data import map_rfam_pdb, read_wt_seq
+from src.struct import get_subopt, pairwise_dist_struct
+import numpy as np
+import matplotlib.pyplot as plt
+from RNA import fold_compound
+from sklearn.cluster import SpectralClustering, KMeans, DBSCAN
+from sklearn.metrics import pairwise_distances
+from os import makedirs, remove
+from os.path import exists
+from glob import glob
+from subprocess import run
+from random import seed, choice
+import re
+from collections import Counter
+seed(42)
+
+for fam in map_rfam_pdb:
+    msa = read_fasta(f"./data/coconet/RNA_DATASET/MSA/{fam}.faclean")
+    if len(msa) > 200 and len(msa) < 5000:
+        pdb = map_rfam_pdb[fam]
+        wt_seq = read_wt_seq(f"./data/coconet/RNA_DATASET/secstruct/secstruct_{pdb}.txt")
+
+        seq_l = list(msa.values())
+        seq_len = len(seq_l[0])
+        bin_seq = encode_align(seq_l).astype(float)
+        bin_seq -= bin_seq.mean(axis=0)
+
+        pca, eigv = compute_pca(bin_seq.T @ bin_seq)
+        proj_seq = bin_seq @ pca
+
+        similarity_matrix = 1 - pairwise_distances(bin_seq, metric='hamming')
+        labels = SpectralClustering(n_clusters=2, affinity='precomputed').fit_predict(similarity_matrix)
+
+        print(Counter(labels))
+        if all([len(np.where(labels == clust)[0]) > 0 for clust in set(labels)]):
+            if not exists(f"./cluster/{fam}"):
+                makedirs(f"./cluster/{fam}")
+
+            if not exists(f"./cluster/input/{fam}"):
+                makedirs(f"./cluster/input/{fam}")
+
+            # clean the directory
+            for files in glob(f"./cluster/input/{fam}/*"):
+                remove(files)
+
+            for clust in set(labels):
+                with open(f"cluster/input/{fam}/clust_{clust}.seq", "w") as out_seq, \
+                    open(f"cluster/input/{fam}/clust_{clust}.fa", "w") as out_fa:
+                    for i in np.where(labels == clust)[0]:
+                        seq_c = re.sub(r"[^AGCU]", "-", seq_l[i])
+                        out_seq.write(f"{seq_c}\n")
+                        out_fa.write(f">{i}\n{seq_c}\n")
+                cmd_l = f"RNAalifold --noPS cluster/input/{fam}/clust_{clust}.fa"
+                cons_str = run(cmd_l, shell=True, text=True, capture_output=True).stdout.split("\n")[1].split()[0]
+                seq = run(cmd_l, shell=True, text=True, capture_output=True).stdout.split("\n")[0].replace("_", "-")
+                with open(f"cluster/input/{fam}/clust_{clust}.init", "w") as out_in, \
+                     open(f"cluster/input/{fam}/clust_{clust}.str", "w") as out_str:
+                    out_str.write(cons_str)
+                    out_in.write(seq)
+                print(clust)
+                print(seq)
+                print(cons_str)
+#+end_src
+
+*** Compare all methods
+
+#+begin_src python
+from src.seq_io import read_fasta, encode_align, pair_freq
+from src.pca_analysis import compute_covariance_mat, compute_pca
+from src.benchmark import  get_wt_data, get_data_R0, compute_pvalue
+import numpy as np
+import matplotlib.pyplot as plt
+from RNA import fold_compound, bp_distance
+from scipy.stats import ttest_ind
+from glob import glob
+import os
+from scipy.stats import wilcoxon, spearmanr
+from scipy.stats import ttest_ind
+import re
+from random import sample
+from itertools import accumulate
+
+def get_data_vae(ffam, bin_mean, pca):
+    des_d = {}
+    struct_d = {}
+    des_db = {}
+    for clust in [0, 1]:
+        name = f"{clust}_vae"
+        des = []
+        for alpha in [-0.2, -0.5, -1]:
+            path = f"./cluster_in_2/{ffam}/clust_{clust}_VAE.seq"
+            des += [l.strip() for l in open(path)]
+        des = sample(des, 500)
+        struct_d[name] = [fold_compound(s).mfe()[0] for s in des]
+        bin_dseq = encode_align(des).astype(float) - bin_mean
+        des_d[name] = encode_align(des).astype(float)
+        des_db[name] = bin_dseq @ pca
+    return des_d, des_db
+
+def get_data_temp(ffam, bin_mean, pca):
+    des_d = {}
+    struct_d = {}
+    des_db = {}
+    for clust in [0, 1]:
+        target = {0: 1, 1: 0}[clust]
+        name = f"{clust}_0T"
+        path = f"./cluster_in_2/{ffam}/clust_{clust}_0.seq_t1.3_Tclust_{clust}"
+        des = [l.strip() for l in open(path)]
+        des = sample(des, 500)
+        struct_d[name] = [fold_compound(s).mfe()[0] for s in des]
+        bin_dseq = encode_align(des).astype(float) - bin_mean
+        des_d[name] = encode_align(des).astype(float)
+        des_db[name] = bin_dseq @ pca
+    return des_d, des_db
+
+def get_data_alpha_struct(ffam, bin_mean, pca):
+    des_d = {}
+    struct_d = {}
+    des_db = {}
+    for clust in [0, 1]:
+        des_type = 3
+        target = {0: 1, 1: 0}[clust]
+        name = f"{clust}_S"
+        des = []
+        for alpha in [2, 3]:
+            path = f"./cluster_in_2/{ffam}/clust_{clust}_{des_type}.seq_t1_p1_a{alpha}_Tclust_{target}"
+            des += [l.strip() for l in open(path)]
+        des = sample(des, 500)
+        struct_d[name] = [fold_compound(s).mfe()[0] for s in des]
+        bin_dseq = encode_align(des).astype(float) - bin_mean
+        des_d[name] = encode_align(des).astype(float)
+        des_db[name] = bin_dseq @ pca
+    return des_d, des_db
+
+def get_data_alpha_mut(ffam, bin_mean, pca):
+    des_d = {}
+    struct_d = {}
+    des_db = {}
+    for clust in [0, 1]:
+        des_type = 0
+        target = clust
+        name = f"{clust}_{des_type}A"
+        des = []
+        for alpha in [-0.5, -1]:
+            path = f"./cluster_in_2/{ffam}/clust_{clust}_{des_type}.seq_w{alpha}_Tclust_{target}"
+            des += [l.strip() for l in open(path)]
+        des = sample(des, 500)
+        struct_d[name] = [fold_compound(s).mfe()[0] for s in des]
+        bin_dseq = encode_align(des).astype(float) - bin_mean
+        des_d[name] = encode_align(des).astype(float)
+        des_db[name] = bin_dseq @ pca
+    return des_d, des_db
+
+sel_fam = ["RF00005_1", "RF01852", "RF00167", "RF00168", "RF00234", "RF00380", "RF01051", "RF01734", "RF01750", "RF01763", "RF01786", "RF01831_1", "RF01854", "RF00028_1", "RF01767", "RF02682", "RF00379", "RF02683", "RF00442_1", "RF00080", "RF00011_1", "RF00050", "RF00504", "RF01689", "RF01725", "RF02001_2"]
+target = {0: 1, 1: 0}
+tmp_res = {"0A": [], "3A": [], "R": [], "S": [], "0T": []}
+for fam in sel_fam:
+    wt_d, bin_seq_r, pca, eigv = get_wt_data(fam)
+    len_seq = bin_seq_r.shape[1]//5
+    num_dim = np.argmax(np.cumsum(eigv/eigv.sum()) >= 0.90) + 1
+    bin_mean = bin_seq_r.mean(axis=0)
+    des_d0, des_db0 = get_data_R0(fam, bin_seq_r.mean(axis=0), pca)
+    des_dt, des_dbt = get_data_temp(fam, bin_seq_r.mean(axis=0), pca)
+    des_ds, des_dbs = get_data_alpha_struct(fam, bin_seq_r.mean(axis=0), pca)
+    # des_vae, des_b_vae = get_data_vae(fam, bin_seq_r.mean(axis=0), pca)
+    des_d, des_db = get_data_alpha_mut(fam, bin_seq_r.mean(axis=0), pca)
+    des_d.update(des_d0); des_db.update(des_db0)
+    des_d.update(des_dt); des_db.update(des_dbt)
+    des_d.update(des_ds); des_db.update(des_dbs)
+    # des_d.update(des_vae); des_db.update(des_b_vae)
+    for init_c in [0, 1]:
+        struct_ref = open(f"./cluster_in_2/input/{fam}/clust_{init_c}.str").readlines()[0]
+        struct_tar = open(f"./cluster_in_2/input/{fam}/clust_{target[init_c]}.str").readlines()[0]
+        dist = bp_distance(struct_ref, struct_tar)
+        to_plot = [f"{init_c}_0A", f"{init_c}_3A", f"{init_c}_R", f"{init_c}_0T", f"{init_c}_S"]
+        proj_wt = (wt_d[target[init_c]] - bin_mean) @ pca
+        for name in to_plot:
+            try:
+                p_values_two_tailed = compute_pvalue(des_db[name], proj_wt, num_dim)
+                avg_sim = ((des_d[name] @ wt_d[target[init_c]].T)/len_seq).mean(axis=1).mean()
+                print(fam, name, np.sum(p_values_two_tailed > 0.01), dist)
+                tmp_res[name.split("_")[-1]] += [(fam, np.sum(p_values_two_tailed > 0.01), dist, avg_sim)]
+            except:
+                print(f"ERR {fam} {name}")
+    del des_d; del des_db
+    del des_dt; del des_dbt
+    del des_d0; del des_db0
+    del des_ds; del des_dbs
+
+famm, pvr, dist_r, sir = zip(*tmp_res["R"])
+famm, pvs, dist_s, sis = zip(*tmp_res["S"])
+famt, pvt, dist_t, sit = zip(*tmp_res["0T"])
+fama, pva, dist_a, sia = zip(*tmp_res["0A"])
+
+for td in ["R", "S", "0T", "0A"]:
+    famm, pvr, dist_r, sir = zip(*tmp_res[td])
+    print(td, sum(pvr))
+
+fig, ax = plt.subplots(figsize=(2.3, 2.3))
+name_plot = {
+    "R": "REG", "S": "HYB", "0T": "T=1.3", "0A": "$\\omega$"
+}
+for ty in ["R", "S", "0T", "0A"]:
+    famm_, pv_, dist_, si_ = zip(*tmp_res[ty])
+    ax.plot(list(accumulate(pv_)), label=name_plot[ty])
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.set_ylabel("Cumulative success")
+ax.set_xlabel("Families")
+ax.legend(frameon=False)
+plt.tight_layout()
+plt.savefig("img/cum_cross_type.png", dpi=300)
+plt.plot()
+
+fig, ax = plt.subplots(figsize=(2.3, 2.3))
+width = 0.5
+ax.bar(np.array(dist_r)-width*0.5, pvr, width)
+ax.bar(np.array(dist_s)+width*0.5, pvs, width)
+ax.set_ylabel("Nb. cross sampled")
+ax.set_xlabel("BP distance(A, B)")
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.set_title("REG")
+ax.set_xlim([-width, 13])
+plt.tight_layout()
+plt.savefig("img/cross_bp_dist.png", dpi=300)
+plt.show()
+#+end_src

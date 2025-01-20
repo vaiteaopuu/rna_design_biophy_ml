@@ -1,0 +1,6 @@
+- /dca_input = input MSAs and structures
+- /mfDCA = Mean Field DCA scores (_3.dca = structure informed; _0.dca = regular mfDCA)
+- out_reg = Regular Boltzmann DCA
+- out_exp = Hybrid Boltzmann DCA with the experimental structure
+- out_ali = Hybrid Boltzmann DCA with the consensus structure
+- out_mfe = Hybrid Boltzmann DCA with the MFE structure
