@@ -35,6 +35,7 @@ def read_dca_score(infile):
                     results[(posi, posj)][(nuc_i, nuc_j)] = nrj
     return results
 
+
 def comp_dca_scores(seq, dca):
     "compute dca score"
     tot = 0.0
@@ -42,6 +43,7 @@ def comp_dca_scores(seq, dca):
         for j, aj in enumerate(seq[i:], start=i):
             tot += dca[(i, j)][(ai, aj)]
     return tot
+
 
 def compute_frobenius_norm(couplings, positions):
     "from the couplings compute the frobenius norm"
@@ -139,11 +141,3 @@ def k_dca_scores(dca_score, k):
     norm = np.argpartition(dca_score.flatten(), -k)[-k:]
     i, j = np.unravel_index(norm, dca_score.shape)
     return [el for el in zip(i, j)]
-
-
-def seq_reweight(bin_seq, max_seqid=0.8):
-    seq_len = bin_seq.shape[1]//21
-    sbin = sparsify(bin_seq)
-    sim_mat = sbin.dot(sbin.T) / seq_len
-    seqw = np.array(1 / (sim_mat > max_seqid).sum(axis=0))
-    return seqw

@@ -48,4 +48,5 @@ the figures.
 - clustering/: it contains the benchmark on structural imprinting.
 
 For details, refer to:
-
+Hybrid Generative Model: Bridging Machine Learning and Biophysics to Expand RNA
+Functional Diversity, Vaitea OPUU, BioRxiv (2025).
